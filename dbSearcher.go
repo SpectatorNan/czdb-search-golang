@@ -5,7 +5,6 @@ import (
 	"czdb-search-golang/bytex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"os"
 )
@@ -14,15 +13,16 @@ type DBSearcher struct {
 	queryType            QueryType
 	totalHeaderBlockSize int64
 	dbType               DBType
-	raf                  *os.File
-	HeaderSip            [][]byte
-	HeaderPtr            []int
-	headerLength         int
-	columnSelection      int64
-	firstIndexPtr        int64
-	totalIndexBlocks     int64
-	dbBinStr             []byte
-	geoMapData           []byte
+	//raf                  *os.File
+	czFile           *Cz88File
+	HeaderSip        [][]byte
+	HeaderPtr        []int
+	headerLength     int
+	columnSelection  int64
+	firstIndexPtr    int64
+	totalIndexBlocks int64
+	dbBinStr         []byte
+	geoMapData       []byte
 }
 
 func NewDBSearcher(dbFile string, key string, queryType QueryType) (*DBSearcher, error) {
@@ -37,29 +37,24 @@ func NewDBSearcher(dbFile string, key string, queryType QueryType) (*DBSearcher,
 		return nil, err
 	}
 
-	offset := headerBlock.GetHeaderSize()
-	_, err = raf.Seek(offset, io.SeekStart)
-	if err != nil {
-		return nil, err
-	}
+	czFile := NewCz88File(raf, headerBlock.GetHeaderSize())
 
+	czFile.Seek(0)
 	superBytes := make([]byte, SUPER_PART_LENGTH)
-	_, err = raf.Read(superBytes)
+	_, err = czFile.Read(superBytes)
 	if err != nil {
 		return nil, err
 	}
 
 	dbType := DBType_IPv4
-	//ipBytesLength := 4
 	if superBytes[0]&1 != 0 {
 		dbType = DBType_IPv6
-		//ipBytesLength = 16
 	}
 
 	searcher := &DBSearcher{
 		queryType: queryType,
 		dbType:    dbType,
-		raf:       raf,
+		czFile:    czFile,
 	}
 
 	err = searcher.loadGetSetting(key)
@@ -82,13 +77,13 @@ func NewDBSearcher(dbFile string, key string, queryType QueryType) (*DBSearcher,
 }
 
 func (s *DBSearcher) loadGetSetting(key string) error {
-	_, err := s.raf.Seek(END_INDEX_PTR, io.SeekStart)
+	_, err := s.czFile.Seek(END_INDEX_PTR)
 	if err != nil {
 		return err
 	}
 
 	data := make([]byte, 4)
-	_, err = s.raf.Read(data)
+	_, err = s.czFile.Read(data)
 	if err != nil {
 		return err
 	}
@@ -96,12 +91,12 @@ func (s *DBSearcher) loadGetSetting(key string) error {
 	endIndexPtr := bytex.GetIntLong(data, 0)
 
 	columnSelectionPtr := endIndexPtr + int64(blocks.GetIndexBlockLength(int(s.dbType)))
-	_, err = s.raf.Seek(columnSelectionPtr, io.SeekStart)
+	_, err = s.czFile.Seek(columnSelectionPtr)
 	if err != nil {
 		return err
 	}
 
-	_, err = s.raf.Read(data)
+	_, err = s.czFile.Read(data)
 	if err != nil {
 		return err
 	}
@@ -112,24 +107,24 @@ func (s *DBSearcher) loadGetSetting(key string) error {
 	}
 
 	geoMapPtr := columnSelectionPtr + 4
-	_, err = s.raf.Seek(geoMapPtr, io.SeekStart)
+	_, err = s.czFile.Seek(geoMapPtr)
 	if err != nil {
 		return err
 	}
 
-	_, err = s.raf.Read(data)
+	_, err = s.czFile.Read(data)
 	if err != nil {
 		return err
 	}
 
 	geoMapSize := bytex.GetIntLong(data, 0)
-	_, err = s.raf.Seek(geoMapPtr+4, io.SeekStart)
+	_, err = s.czFile.Seek(geoMapPtr + 4)
 	if err != nil {
 		return err
 	}
 
 	geoMapData := make([]byte, geoMapSize)
-	_, err = s.raf.Read(geoMapData)
+	_, err = s.czFile.Read(geoMapData)
 	if err != nil {
 		return err
 	}
@@ -141,25 +136,21 @@ func (s *DBSearcher) loadGetSetting(key string) error {
 }
 
 func (s *DBSearcher) initializeMemorySearch() error {
-	fileInfo, err := s.raf.Stat()
-	if err != nil {
-		return err
-	}
 
-	fileSize := fileInfo.Size()
+	fileSize := s.czFile.Length()
 	s.dbBinStr = make([]byte, fileSize)
 
-	_, err = s.raf.Seek(0, io.SeekStart)
+	_, err := s.czFile.Seek(0)
 	if err != nil {
 		return err
 	}
 
-	_, err = s.raf.Read(s.dbBinStr)
+	_, err = s.czFile.Read(s.dbBinStr)
 	if err != nil {
 		return err
 	}
 
-	err = s.raf.Close()
+	err = s.czFile.Close()
 	if err != nil {
 		return err
 	}
@@ -184,13 +175,13 @@ func (s *DBSearcher) initMemoryOrBinaryModeParam(bytes []byte, fileSize int) err
 }
 
 func (s *DBSearcher) initBtreeModeParam() error {
-	_, err := s.raf.Seek(0, io.SeekStart)
+	_, err := s.czFile.Seek(0)
 	if err != nil {
 		return err
 	}
 
 	data := make([]byte, SUPER_PART_LENGTH)
-	_, err = s.raf.Read(data)
+	_, err = s.czFile.Read(data)
 	if err != nil {
 		return err
 	}
@@ -198,7 +189,7 @@ func (s *DBSearcher) initBtreeModeParam() error {
 	s.totalHeaderBlockSize = bytex.GetIntLong(data, HEADER_BLOCK_PTR)
 
 	data = make([]byte, s.totalHeaderBlockSize)
-	_, err = s.raf.Read(data)
+	_, err = s.czFile.Read(data)
 	if err != nil {
 		return err
 	}
@@ -222,9 +213,9 @@ func (s *DBSearcher) initHeaderBlock(b []byte) {
 	s.headerLength = idx
 }
 func (s *DBSearcher) Close() {
-	if s.raf != nil {
-		_ = s.raf.Close()
-		s.raf = nil
+	if s.czFile != nil {
+		_ = s.czFile.Close()
+		s.czFile = nil
 	}
 	s.dbBinStr = nil
 	s.HeaderSip = nil
@@ -234,15 +225,17 @@ func (s *DBSearcher) Close() {
 func (s *DBSearcher) getIpBytes(ip string) ([]byte, error) {
 	nip := net.ParseIP(ip)
 	if s.dbType == 4 {
-		if len(nip) != net.IPv4len {
+		ipv4 := nip.To4()
+		if ipv4 == nil {
 			return nil, errors.New(fmt.Sprintf("IP [%s] format error for %d", ip, s.dbType))
 		}
-		return nip.To4(), nil
+		return ipv4, nil
 	} else {
-		if len(nip) != net.IPv6len {
+		ipv6 := nip.To16()
+		if ipv6 == nil {
 			return nil, errors.New(fmt.Sprintf("IP [%s] format error for %d", ip, s.dbType))
 		}
-		return nip.To16(), nil
+		return ipv6, nil
 	}
 }
 func (s *DBSearcher) Search(ip string) (string, error) {
@@ -354,12 +347,12 @@ func (s *DBSearcher) bTreeSearch(ipBytes []byte) *blocks.DataBlock {
 	blockLen := eptr - sptr
 	blen := blocks.GetIndexBlockLength(int(s.dbType))
 	iBuffer := make([]byte, blockLen+blen)
-	_, err := s.raf.Seek(int64(sptr), io.SeekStart)
+	_, err := s.czFile.Seek(int64(sptr))
 	if err != nil {
 		return nil
 	}
 
-	_, err = s.raf.Read(iBuffer)
+	_, err = s.czFile.Read(iBuffer)
 	if err != nil {
 		return nil
 	}
@@ -394,13 +387,13 @@ func (s *DBSearcher) bTreeSearch(ipBytes []byte) *blocks.DataBlock {
 		return nil
 	}
 
-	_, err = s.raf.Seek(int64(dataPtr), io.SeekStart)
+	_, err = s.czFile.Seek(int64(dataPtr))
 	if err != nil {
 		return nil
 	}
 
 	region := make([]byte, dataLen)
-	_, err = s.raf.Read(region)
+	_, err = s.czFile.Read(region)
 	if err != nil {
 		return nil
 	}

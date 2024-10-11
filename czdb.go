@@ -17,9 +17,6 @@ const (
 	END_INDEX_PTR     = 13
 	HEADER_BLOCK_PTR  = 9
 	FILE_SIZE_PTR     = 1
-
-	QUERY_TYPE_MEMORY = "MEMORY"
-	QUERY_TYPE_BTREE  = "BTREE"
 )
 
 func compareBytes(bytes1, bytes2 []byte, length int) int {
